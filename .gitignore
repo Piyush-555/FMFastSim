@@ -1,0 +1,8 @@
+checkpoint/
+conversion/
+dataset/
+generation/
+validation/
+wandb/
+*/__pycache__/*
+
