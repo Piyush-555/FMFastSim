@@ -1,90 +1,128 @@
 # TODO: Make changes wrt to PyTorch
 
+import os
 import gc
 from dataclasses import dataclass, field
 from typing import List, Tuple
 
-import numpy as np
-import tensorflow as tf
 import wandb
+import numpy as np
 from sklearn.model_selection import KFold
-from tensorflow.keras import backend as K
-from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, History, Callback
-from tensorflow.keras.layers import BatchNormalization, Input, Dense, Layer, concatenate
-from tensorflow.keras.losses import BinaryCrossentropy, Reduction, MeanSquaredError
-from tensorflow.keras.models import Model
-from tensorflow.python.data import Dataset
-from tensorflow.python.distribute.distribute_lib import Strategy
-from tensorflow.python.distribute.mirrored_strategy import MirroredStrategy
-from wandb.keras import WandbCallback
+import torch
+import torch.nn as nn
+from torch.utils.data import TensorDataset, DataLoader
 
 from core.constants import ORIGINAL_DIM, LATENT_DIM, BATCH_SIZE_PER_REPLICA, EPOCHS, LEARNING_RATE, ACTIVATION, \
     OUT_ACTIVATION, OPTIMIZER_TYPE, KERNEL_INITIALIZER, GLOBAL_CHECKPOINT_DIR, EARLY_STOP, BIAS_INITIALIZER, \
     INTERMEDIATE_DIMS, SAVE_MODEL_EVERY_EPOCH, SAVE_BEST_MODEL, PATIENCE, MIN_DELTA, BEST_MODEL_FILENAME, \
-    NUMBER_OF_K_FOLD_SPLITS, VALIDATION_SPLIT, WANDB_ENTITY, N_CELLS_R, N_CELLS_PHI, N_CELLS_Z, INLCUDE_PHYSICS_LOSS
+    NUMBER_OF_K_FOLD_SPLITS, VALIDATION_SPLIT, WANDB_ENTITY, N_CELLS_R, N_CELLS_PHI, N_CELLS_Z, INLCUDE_PHYSICS_LOSS, KL_WEIGHT
 from utils.optimizer import OptimizerFactory, OptimizerType
 
 
-class _Sampling(Layer):
+def _Sampling(z_mean, z_log_var, epsilon):
     """ Custom layer to do the reparameterization trick: sample random latent vectors z from the latent Gaussian
     distribution.
 
     The sampled vector z is given by sampled_z = mean + std * epsilon
     """
-
-    def __call__(self, inputs, **kwargs):
-        z_mean, z_log_var, epsilon = inputs
-        z_sigma = K.exp(0.5 * z_log_var)
-        return z_mean + z_sigma * epsilon
+    z_sigma = torch.exp(0.5 * z_log_var)
+    return z_mean + z_sigma * epsilon
 
 
 # KL divergence computation
-class _KLDivergenceLayer(Layer):
-
-    def call(self, inputs, **kwargs):
-        mu, log_var = inputs
-        kl_loss = -0.5 * (1 + log_var - K.square(mu) - K.exp(log_var))
-        kl_loss = K.mean(K.sum(kl_loss, axis=-1))
-        self.add_loss(kl_loss)
-        return inputs
+def _KLDivergence(mu, log_var, **kwargs):
+    kl_loss = -0.5 * (1 + log_var - torch.square(mu) - torch.exp(log_var))
+    kl_loss = kl_loss.sum(dim=-1).mean()
+    # print(kl_loss)
+    return kl_loss
 
 
 # Physics observables
 def _PhysicsLosses(y_true, y_pred):
-    y_true = tf.reshape(y_true, (-1, N_CELLS_R, N_CELLS_PHI, N_CELLS_Z))
-    y_pred = tf.reshape(y_pred, (-1, N_CELLS_R, N_CELLS_PHI, N_CELLS_Z))
+    y_true = torch.reshape(y_true, (-1, N_CELLS_R, N_CELLS_PHI, N_CELLS_Z))
+    y_pred = torch.reshape(y_pred, (-1, N_CELLS_R, N_CELLS_PHI, N_CELLS_Z))
     # longitudinal profile
-    loss = MeanSquaredError(reduction=Reduction.SUM)(tf.reduce_sum(y_true, axis=(0, 1, 2)), tf.reduce_sum(y_pred, axis=(0, 1, 2))) / (BATCH_SIZE_PER_REPLICA * N_CELLS_R * N_CELLS_PHI)
+    loss = nn.MSELoss(reduction='sum')(torch.sum(y_pred, dim=(0, 1, 2)), torch.sum(y_true, dim=(0, 1, 2))) / (BATCH_SIZE_PER_REPLICA * N_CELLS_R * N_CELLS_PHI)
     # lateral profile
-    loss += MeanSquaredError(reduction=Reduction.SUM)(tf.reduce_sum(y_true, axis=(0, 2, 3)), tf.reduce_sum(y_pred, axis=(0, 2, 3))) / (BATCH_SIZE_PER_REPLICA * N_CELLS_Z * N_CELLS_PHI)
+    loss += nn.MSELoss(reduction='sum')(torch.sum(y_pred, dim=(0, 2, 3)), torch.sum(y_true, dim=(0, 2, 3))) / (BATCH_SIZE_PER_REPLICA * N_CELLS_Z * N_CELLS_PHI)
     return loss
 
 
-def _Loss(y_true, y_pred):
-    reconstruction_loss = BinaryCrossentropy(reduction=Reduction.SUM)(y_true, y_pred)
-    loss = reconstruction_loss
+def _Loss(model, y_true, y_pred):
+    # import pdb;pdb.set_trace()
+    loss = nn.BCELoss(reduction='sum')(y_pred, y_true)
+    # print(loss)
+    loss += KL_WEIGHT * model.get_KL()
     if INLCUDE_PHYSICS_LOSS:
         loss += _PhysicsLosses(y_true, y_pred)
     return loss
 
 
-class VAE(Model):
-    def get_config(self):
-        config = super().get_config()
-        config["encoder"] = self.encoder
-        config["decoder"] = self.decoder
-        return config
+class Encoder(nn.Module):
+    def __init__(self, original_dim, intermediate_dims, latent_dim, activation, kernel_initializer, bias_initializer):
+        super().__init__()
+        all_dims = [original_dim + 4,] + intermediate_dims
+        self.blocks = nn.Sequential(
+            *[self.block(all_dims[i], all_dims[i+1], activation) for i in range(len(all_dims) - 1)]
+        )
+        self.mu_layer = nn.Linear(all_dims[-1], latent_dim)
+        self.log_var_layer = nn.Linear(all_dims[-1], latent_dim)
 
-    def call(self, inputs, training=None, mask=None):
-        _, e_input, angle_input, geo_input, _ = inputs
-        z = self.encoder(inputs)
-        return self.decoder([z, e_input, angle_input, geo_input])
+    def block(self, in_dims, out_dims, activation):
+        return nn.Sequential(
+            nn.Linear(in_dims, out_dims),
+            activation(),
+            nn.BatchNorm1d(out_dims)
+        )
+    
+    def forward(self, inputs):
+        x = torch.concat(inputs, dim=1)
+        for block in self.blocks:
+            x = block(x)
+        return self.mu_layer(x), self.log_var_layer(x)
 
+
+class Decoder(nn.Module):
+    def __init__(self, original_dim, intermediate_dims, latent_dim, activation, out_activation, kernel_initializer, bias_initializer):
+        super().__init__()
+        all_dims = [latent_dim + 4,] + intermediate_dims[::-1]
+        self.blocks = nn.Sequential(
+            *[self.block(all_dims[i], all_dims[i+1], activation) for i in range(len(all_dims) - 1)]
+        )
+        self.output_layer = nn.Sequential(
+            nn.Linear(all_dims[-1], original_dim),
+            out_activation()
+        )
+
+    def block(self, in_dims, out_dims, activation):
+        return nn.Sequential(
+            nn.Linear(in_dims, out_dims),
+            activation(),
+            nn.BatchNorm1d(out_dims)
+        )
+    
+    def forward(self, inputs):
+        x = torch.concat(inputs, dim=1)
+        for block in self.blocks:
+            x = block(x)
+        return self.output_layer(x)
+
+
+class VAE(nn.Module):
     def __init__(self, encoder, decoder, **kwargs):
         super(VAE, self).__init__(**kwargs)
         self.encoder = encoder
         self.decoder = decoder
-        self._set_inputs(inputs=self.encoder.inputs, outputs=self(self.encoder.inputs))
+
+    def forward(self, inputs):
+        x, e_input, angle_input, geo_input, eps = inputs
+        # import pdb; pdb.set_trace()
+        self.mu, self.log_var = self.encoder([x, e_input, angle_input, geo_input])
+        z = _Sampling(self.mu, self.log_var, eps)
+        return self.decoder([z, e_input, angle_input, geo_input])
+    
+    def get_KL(self):
+        return _KLDivergence(self.mu, self.log_var)
 
 
 @dataclass
@@ -114,15 +152,15 @@ class VAEHandler:
     _min_delta: float = MIN_DELTA
     _best_model_filename: str = BEST_MODEL_FILENAME
     _validation_split: float = VALIDATION_SPLIT
-    _strategy: Strategy = MirroredStrategy()
+    _strategy = None  # TODO
 
     def __post_init__(self) -> None:
         # Calculate true batch size.
-        self._batch_size = self._batch_size_per_replica * self._strategy.num_replicas_in_sync
-        self._build_and_compile_new_model()
+        self._batch_size = self._batch_size_per_replica  # * self._strategy.num_replicas_in_sync TODO
+        self._build_model()
         # Setup Wandb.
         if self._wandb_project_name is not None:
-            self._setup_wandb()
+            pass #self._setup_wandb()
 
     def _setup_wandb(self) -> None:
         config = {
@@ -138,7 +176,7 @@ class VAEHandler:
         wandb.init(project=self._wandb_project_name, entity=WANDB_ENTITY, reinit=True, config=config,
                    tags=self._wandb_tags)
 
-    def _build_and_compile_new_model(self) -> None:
+    def _build_model(self) -> None:
         """ Builds and compiles a new model.
 
         VAEHandler keep a list of VAE instance. The reason is that while k-fold cross validation is performed,
@@ -149,132 +187,69 @@ class VAEHandler:
 
         """
         # Build encoder and decoder.
-        encoder = self._build_encoder()
-        decoder = self._build_decoder()
+        encoder = Encoder(self._original_dim, self._intermediate_dims, self.latent_dim,
+            self._activation, self._kernel_initializer, self._bias_initializer)
+        decoder = Decoder(self._original_dim, self._intermediate_dims, self.latent_dim,
+            self._activation, self._out_activation, self._kernel_initializer, self._bias_initializer)
 
-        # Compile model within a distributed strategy.
-        with self._strategy.scope():
-            # Build VAE.
-            self.model = VAE(encoder, decoder)
-            # Manufacture an optimizer and compile model with.
-            optimizer = OptimizerFactory.create_optimizer(self._optimizer_type, self._learning_rate)
-            self.model.compile(optimizer=optimizer, loss=_Loss)
+        # Build VAE.
+        self.model = VAE(encoder, decoder)
+        # Manufacture an optimizer and compile model with.
+        self.optimizer = OptimizerFactory.create_optimizer(self.model.parameters(), self._optimizer_type, self._learning_rate)
+        self.loss_fn = _Loss
 
-    def _prepare_input_layers(self, for_encoder: bool) -> List[Input]:
-        """
-        Create four Input layers. Each of them is responsible to take respectively: batch of showers/batch of latent
-        vectors, batch of energies, batch of angles, batch of geometries.
+    def _fit(self, epochs, trainloader, validloader, device, verbose=True):
+        min_val_loss = np.inf
+        self.model.to(device)
+        history = []
+        
+        for epoch in range(epochs):
 
-        Args:
-            for_encoder: Boolean which decides whether an input is full dimensional shower or a latent vector.
+            # Training
+            self.model.train()
+            training_loss = 0
+            for inputs in trainloader:
+                inputs = [i.to(device) for i in inputs]
+                x = inputs[0]
+                self.optimizer.zero_grad()
+                y = self.model(inputs)
+                loss = self.loss_fn(self.model, x, y)
+                loss.backward()
+                self.optimizer.step()
+                training_loss += loss.item()
+            
+            # Validation
+            self.model.eval()
+            valid_loss = 0
+            for inputs in validloader:
+                inputs = [i.to(device) for i in inputs]
+                x = inputs[0]
+                y = self.model(inputs)
+                loss = self.loss_fn(self.model, x, y)
+                valid_loss += loss.item()
+            
+            training_loss /= len(trainloader)
+            valid_loss /= len(validloader)
 
-        Returns:
-            List of Input layers (five for encoder and four for decoder).
+            if min_val_loss > valid_loss:
+                min_val_loss = valid_loss
+                if self._save_best_model:
+                    os.makedirs(f"{self._checkpoint_dir}/VAE_best/", exist_ok=True)
+                    torch.save(self.model.state_dict(), f"{self._checkpoint_dir}/VAE_best/model_weights.pt")
 
-        """
-        e_input = Input(shape=(1,))
-        angle_input = Input(shape=(1,))
-        geo_input = Input(shape=(2,))
-        if for_encoder:
-            x_input = Input(shape=self._original_dim)
-            eps_input = Input(shape=self.latent_dim)
-            return [x_input, e_input, angle_input, geo_input, eps_input]
-        else:
-            x_input = Input(shape=self.latent_dim)
-            return [x_input, e_input, angle_input, geo_input]
-
-    def _build_encoder(self) -> Model:
-        """ Based on a list of intermediate dimensions, activation function and initializers for kernel and bias builds
-        the encoder.
-
-        Returns:
-             Encoder is returned as a keras.Model.
-
-        """
-
-        with self._strategy.scope():
-            # Prepare input layer.
-            x_input, e_input, angle_input, geo_input, eps_input = self._prepare_input_layers(for_encoder=True)
-            x = concatenate([x_input, e_input, angle_input, geo_input])
-            # Construct hidden layers (Dense and Batch Normalization).
-            for intermediate_dim in self._intermediate_dims:
-                x = Dense(units=intermediate_dim, activation=self._activation,
-                          kernel_initializer=self._kernel_initializer,
-                          bias_initializer=self._bias_initializer)(x)
-                x = BatchNormalization()(x)
-            # Add Dense layer to get description of multidimensional Gaussian distribution in terms of mean
-            # and log(variance).
-            z_mean = Dense(self.latent_dim, name="z_mean")(x)
-            z_log_var = Dense(self.latent_dim, name="z_log_var")(x)
-            # Add KLDivergenceLayer responsible for calculation of KL loss.
-            z_mean, z_log_var = _KLDivergenceLayer()([z_mean, z_log_var])
-            # Sample a probe from the distribution.
-            encoder_output = _Sampling()([z_mean, z_log_var, eps_input])
-            # Create model.
-            encoder = Model(inputs=[x_input, e_input, angle_input, geo_input, eps_input], outputs=encoder_output,
-                            name="encoder")
-        return encoder
-
-    def _build_decoder(self) -> Model:
-        """ Based on a list of intermediate dimensions, activation function and initializers for kernel and bias builds
-        the decoder.
-
-        Returns:
-             Decoder is returned as a keras.Model.
-
-        """
-
-        with self._strategy.scope():
-            # Prepare input layer.
-            latent_input, e_input, angle_input, geo_input = self._prepare_input_layers(for_encoder=False)
-            x = concatenate([latent_input, e_input, angle_input, geo_input])
-            # Construct hidden layers (Dense and Batch Normalization).
-            for intermediate_dim in reversed(self._intermediate_dims):
-                x = Dense(units=intermediate_dim, activation=self._activation,
-                          kernel_initializer=self._kernel_initializer,
-                          bias_initializer=self._bias_initializer)(x)
-                x = BatchNormalization()(x)
-            # Add Dense layer to get output which shape is compatible in an input's shape.
-            decoder_outputs = Dense(units=self._original_dim, activation=self._out_activation)(x)
-            # Create model.
-            decoder = Model(inputs=[latent_input, e_input, angle_input, geo_input], outputs=decoder_outputs,
-                            name="decoder")
-        return decoder
-
-    def _manufacture_callbacks(self) -> List[Callback]:
-        """
-        Based on parameters set by the user, manufacture callbacks required for training.
-
-        Returns:
-            A list of `Callback` objects.
-
-        """
-        callbacks = []
-        # If the early stopping flag is on then stop the training when a monitored metric (validation) has stopped
-        # improving after (patience) number of epochs.
-        if self._early_stop:
-            callbacks.append(
-                EarlyStopping(monitor="val_loss",
-                              min_delta=self._min_delta,
-                              patience=self._patience,
-                              verbose=True,
-                              restore_best_weights=True))
-        # Save model after every epoch.
-        if self._save_model_every_epoch:
-            callbacks.append(ModelCheckpoint(filepath=f"{self._checkpoint_dir}/VAE_epoch_{{epoch:03}}/model_weights",
-                                             monitor="val_loss",
-                                             verbose=True,
-                                             save_weights_only=True,
-                                             mode="min",
-                                             save_freq="epoch"))
-        # Pass metadata to wandb.
-        callbacks.append(WandbCallback(
-            monitor="val_loss", verbose=0, mode="auto", save_model=False))
-        return callbacks
+            if self._save_model_every_epoch:
+                os.makedirs(f"{self._checkpoint_dir}/VAE_epoch_{{epoch:03}}/", exist_ok=True)
+                torch.save(self.model.state_dict(), f"{self._checkpoint_dir}/VAE_epoch_{{epoch:03}}/model_weights.pt")
+            
+            if verbose:
+                print("Epoch: {} \tTrainLoss: {} \tValidLoss: {}".format(epoch + 1, training_loss, valid_loss))
+            
+            history.append([epoch, training_loss, valid_loss])
+        return history
 
     def _get_train_and_val_data(self, dataset: np.array, e_cond: np.array, angle_cond: np.array, geo_cond: np.array,
                                 noise: np.array, train_indexes: np.array, validation_indexes: np.array) \
-            -> Tuple[Dataset, Dataset]:
+            -> Tuple[DataLoader, DataLoader]:
         """
         Splits data into train and validation set based on given lists of indexes.
 
@@ -295,32 +270,29 @@ class VAEHandler:
         val_noise = noise[validation_indexes, :]
 
         # Gather them into tuples.
-        train_x = (train_dataset, train_e_cond, train_angle_cond, train_geo_cond, train_noise)
-        train_y = train_dataset
-        val_x = (val_dataset, val_e_cond, val_angle_cond, val_geo_cond, val_noise)
-        val_y = val_dataset
+        train_data = [
+            train_dataset.astype(np.float32),
+            train_e_cond.astype(np.float32).reshape(-1, 1),
+            train_angle_cond.astype(np.float32).reshape(-1, 1),
+            train_geo_cond,
+            train_noise.astype(np.float32)
+            ]
+        val_data = [
+            val_dataset.astype(np.float32),
+            val_e_cond.astype(np.float32).reshape(-1, 1),
+            val_angle_cond.astype(np.float32).reshape(-1, 1),
+            val_geo_cond,
+            val_noise.astype(np.float32)]
 
-        # Wrap data in Dataset objects.
-        # TODO(@mdragula): This approach requires loading the whole data set to RAM. It
-        #  would be better to read the data partially when needed. Also one should bare in mind that using tf.Dataset
-        #  slows down training process.
-        train_data = Dataset.from_tensor_slices((train_x, train_y))
-        val_data = Dataset.from_tensor_slices((val_x, val_y))
+        trainset = TensorDataset(*[torch.from_numpy(i) for i in train_data])
+        validset = TensorDataset(*[torch.from_numpy(i) for i in val_data])
 
-        # The batch size must now be set on the Dataset objects.
-        train_data = train_data.batch(self._batch_size)
-        val_data = val_data.batch(self._batch_size)
-
-        # Disable AutoShard.
-        options = tf.data.Options()
-        options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.DATA
-        train_data = train_data.with_options(options)
-        val_data = val_data.with_options(options)
-
-        return train_data, val_data
+        trainloader = DataLoader(trainset, batch_size=self._batch_size)
+        validloader = DataLoader(validset, batch_size=self._batch_size)
+        return trainloader, validloader
 
     def _k_fold_training(self, dataset: np.array, e_cond: np.array, angle_cond: np.array, geo_cond: np.array,
-                         noise: np.array, callbacks: List[Callback], verbose: bool = True) -> List[History]:
+                         noise: np.array, device, verbose: bool = True) -> List[List[float]]:
         """
         Performs K-fold cross validation training.
 
@@ -347,18 +319,12 @@ class VAEHandler:
 
         for i, (train_indexes, validation_indexes) in enumerate(k_fold.split(dataset)):
             print(f"K-fold: {i + 1}/{self._number_of_k_fold_splits}...")
-            train_data, val_data = self._get_train_and_val_data(dataset, e_cond, angle_cond, geo_cond, noise,
+            trainloader, validloader = self._get_train_and_val_data(dataset, e_cond, angle_cond, geo_cond, noise,
                                                                 train_indexes, validation_indexes)
 
-            self._build_and_compile_new_model()
+            self._build_model()
 
-            history = self.model.fit(x=train_data,
-                                     shuffle=True,
-                                     epochs=self._epochs,
-                                     verbose=verbose,
-                                     validation_data=val_data,
-                                     callbacks=callbacks
-                                     )
+            history = self._fit(self._epochs, trainloader, validloader, device, verbose)
             histories.append(history)
 
             if self._save_best_model:
@@ -375,7 +341,7 @@ class VAEHandler:
         return histories
 
     def _single_training(self, dataset: np.array, e_cond: np.array, angle_cond: np.array, geo_cond: np.array,
-                         noise: np.ndarray, callbacks: List[Callback], verbose: bool = True) -> List[History]:
+                         noise: np.ndarray, device, verbose: bool = True) -> List[List[float]]:
         """
         Performs a single training.
 
@@ -401,24 +367,15 @@ class VAEHandler:
         split = int(dataset_size * self._validation_split)
         train_indexes, validation_indexes = permutation[split:], permutation[:split]
 
-        train_data, val_data = self._get_train_and_val_data(dataset, e_cond, angle_cond, geo_cond, noise, train_indexes,
+        trainloader, validloader = self._get_train_and_val_data(dataset, e_cond, angle_cond, geo_cond, noise, train_indexes,
                                                             validation_indexes)
 
-        history = self.model.fit(x=train_data,
-                                 shuffle=True,
-                                 epochs=self._epochs,
-                                 verbose=verbose,
-                                 validation_data=val_data,
-                                 callbacks=callbacks
-                                 )
-        if self._save_best_model:
-            self.model.save_weights(f"{self._checkpoint_dir}/VAE_best/model_weights")
-            print("Best model was saved.")
+        history = self._fit(self._epochs, trainloader, validloader, device, verbose)
 
         return [history]
 
     def train(self, dataset: np.array, e_cond: np.array, angle_cond: np.array, geo_cond: np.array,
-              verbose: bool = True) -> List[History]:
+              device, verbose: bool = True) -> List[List[float]]:
         """
         For a given input data trains and validates the model.
 
@@ -439,11 +396,9 @@ class VAEHandler:
 
         """
 
-        callbacks = self._manufacture_callbacks()
-
         noise = np.random.normal(0, 1, size=(dataset.shape[0], self.latent_dim))
 
         if self._number_of_k_fold_splits > 1:
-            return self._k_fold_training(dataset, e_cond, angle_cond, geo_cond, noise, callbacks, verbose)
+            return self._k_fold_training(dataset, e_cond, angle_cond, geo_cond, noise, device, verbose)
         else:
-            return self._single_training(dataset, e_cond, angle_cond, geo_cond, noise, callbacks, verbose)
+            return self._single_training(dataset, e_cond, angle_cond, geo_cond, noise, device, verbose)

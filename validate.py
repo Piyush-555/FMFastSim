@@ -34,6 +34,7 @@ def main():
     vae_energies = np.load(f"{GEN_DIR}/VAE_Generated_Geo_{geometry}_E_{particle_energy}_Angle_{particle_angle}.npy")
     # Reshape the events into 3D
     e_layer_vae = vae_energies.reshape((len(vae_energies), N_CELLS_R, N_CELLS_PHI, N_CELLS_Z))
+    # import pdb;pdb.set_trace()
 
     print("Data has been loaded.")
 

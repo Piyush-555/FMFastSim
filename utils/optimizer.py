@@ -1,8 +1,8 @@
-# TODO: Make changes wrt to PyTorch
-
 from enum import IntEnum
+from typing import Generator
 
-from tensorflow.keras.optimizers import Optimizer, Adadelta, Adagrad, Adam, Adamax, Ftrl, SGD, Nadam, RMSprop
+from torch.nn.parameter import Parameter
+from torch.optim import Optimizer, Adadelta, Adagrad, Adam, Adamax, SGD, NAdam, RMSprop
 
 
 class OptimizerType(IntEnum):
@@ -19,7 +19,7 @@ class OptimizerType(IntEnum):
     ADAGRAD = 4
     ADAMAX = 5
     NADAM = 6
-    FTRL = 7
+    # FTRL = 7  # Not in PyTorch
 
 
 class OptimizerFactory:
@@ -27,7 +27,8 @@ class OptimizerFactory:
     """
 
     @staticmethod
-    def create_optimizer(optimizer_type: OptimizerType, learning_rate: float) -> Optimizer:
+    def create_optimizer(parameters: Generator[Parameter, None, None],
+        optimizer_type: OptimizerType, learning_rate: float, **kwargs) -> Optimizer:
         """For a given type and a learning rate creates an instance of optimizer.
 
         Args:
@@ -39,19 +40,23 @@ class OptimizerFactory:
 
         """
         if optimizer_type == OptimizerType.SGD:
-            return SGD(learning_rate)
+            return SGD(parameters, learning_rate, **kwargs)
         elif optimizer_type == OptimizerType.RMSPROP:
-            return RMSprop(learning_rate)
+            return RMSprop(parameters, learning_rate, **kwargs)
         elif optimizer_type == OptimizerType.ADAM:
-            return Adam(learning_rate)
+            return Adam(parameters, learning_rate, **kwargs)
         elif optimizer_type == OptimizerType.ADADELTA:
-            return Adadelta(learning_rate)
+            return Adadelta(parameters, learning_rate, **kwargs)
         elif optimizer_type == OptimizerType.ADAGRAD:
-            return Adagrad(learning_rate)
+            return Adagrad(parameters, learning_rate, **kwargs)
         elif optimizer_type == OptimizerType.ADAMAX:
-            return Adamax(learning_rate)
+            return Adamax(parameters, learning_rate, **kwargs)
         elif optimizer_type == OptimizerType.NADAM:
-            return Nadam(learning_rate)
+            return Nadam(parameters, learning_rate, **kwargs)
         else:
+            raise ValueError
+            # Not in PyTorch
+            """
             # i.e. optimizer_type == OptimizerType.FTRL
             return Ftrl(learning_rate)
+            """

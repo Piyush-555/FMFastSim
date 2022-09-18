@@ -1,5 +1,3 @@
-# TODO: Validate if it works with PyTorch
-
 from argparse import ArgumentParser
 
 from core.constants import GPU_IDS, MAX_GPU_MEMORY_ALLOCATION, GLOBAL_CHECKPOINT_DIR
@@ -25,13 +23,14 @@ def main():
     checkpoint_dir = f"{GLOBAL_CHECKPOINT_DIR}/{study_name}"
 
     # 1. Set GPU memory limits.
-    GPULimiter(_gpu_ids=gpu_ids, _max_gpu_memory_allocation=max_gpu_memory_allocation)()
+    device = GPULimiter(_gpu_ids=gpu_ids, _max_gpu_memory_allocation=max_gpu_memory_allocation)()
 
     # 2. Data loading/preprocessing
 
     # The preprocess function reads the data and performs preprocessing and encoding for the values of energy,
     # angle and geometry
     energies_train, cond_e_train, cond_angle_train, cond_geo_train = preprocess()
+    # import pdb;pdb.set_trace()
 
     # 3. Manufacture model handler.
 
@@ -43,7 +42,8 @@ def main():
     histories = vae.train(energies_train,
                           cond_e_train,
                           cond_angle_train,
-                          cond_geo_train
+                          cond_geo_train,
+                          device
                           )
 
     # Note : One history object can be used to plot the loss evaluation as function of the epochs. Remember that the

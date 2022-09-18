@@ -1,16 +1,14 @@
-# TODO: Make changes wrt to PyTorch
-
 import os
 from dataclasses import dataclass
 
-import tensorflow as tf
+import torch
 
 
 @dataclass
 class GPULimiter:
     """
-    Class responsible to set the limits of possible GPU usage by TensorFlow. Currently, the limiter creates one
-    instance of logical device per physical device. This can be changed in a future.
+    Class responsible to set the limits of possible GPU usage by PyTorch. There is no option as of now to setup
+    virtual device in PyTorch. So, keeping 1 virtual device per 1 physical device.
 
     Attributes:
         _gpu_ids: A string representing visible devices for the process. Identifiers of physical GPUs should
@@ -23,16 +21,15 @@ class GPULimiter:
 
     def __call__(self):
         os.environ["CUDA_VISIBLE_DEVICES"] = f"{self._gpu_ids}"
-        gpus = tf.config.list_physical_devices('GPU')
+        gpus = torch.cuda.device_count()
         if gpus:
-            # Restrict TensorFlow to only allocate max_gpu_memory_allocation*1024 MB of memory on one of the GPUs
+            # Restrict PyTorch to only allocate the required fraction for each GPU
             try:
-                for gpu in gpus:
-                    tf.config.set_logical_device_configuration(
-                        gpu,
-                        [tf.config.LogicalDeviceConfiguration(memory_limit=1024 * self._max_gpu_memory_allocation)])
-                logical_gpus = tf.config.list_logical_devices('GPU')
-                print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPUs")
+                for gpu_id in range(gpus):
+                    total_memory = torch.cuda.get_device_properties(gpu_id).total_memory / (1024**3)  # In GB
+                    fraction = self._max_gpu_memory_allocation / total_memory
+                    torch.cuda.set_per_process_memory_fraction(fraction, gpu_id)
+                return torch.device('cuda:{}'.format(gpu_id))  # TODO
             except RuntimeError as e:
-                # Virtual devices must be set before GPUs have been initialized
+                # Devices must be set before GPUs have been initialized
                 print(e)

@@ -1,3 +1,5 @@
+import torch.nn as nn
+
 from utils.optimizer import OptimizerType
 
 """
@@ -25,7 +27,7 @@ MAX_ANGLE = 70
 Directories.
 """
 # Directory to load the full simulation dataset.
-INIT_DIR = "../../eos/geant4/fastSim/Par04_public/HDF5_Zenodo/"
+INIT_DIR = "dataset/"
 # Directory to save VAE checkpoints
 GLOBAL_CHECKPOINT_DIR = "./checkpoint"
 # Directory to save model after conversion to a format that can be used in C++.
@@ -40,14 +42,15 @@ Model default parameters.
 """
 BATCH_SIZE_PER_REPLICA = 128
 INLCUDE_PHYSICS_LOSS = False
+KL_WEIGHT = 1
 # Total number of readout cells (represents the number of nodes in the input/output layers of the model).
 ORIGINAL_DIM = N_CELLS_Z * N_CELLS_R * N_CELLS_PHI
 INTERMEDIATE_DIMS = [100, 50, 20, 14]
 LATENT_DIM = 10
 EPOCHS = 1000
 LEARNING_RATE = 0.001
-ACTIVATION = "leaky_relu"
-OUT_ACTIVATION = "sigmoid"
+ACTIVATION = nn.LeakyReLU
+OUT_ACTIVATION = nn.Sigmoid
 VALIDATION_SPLIT = 0.10
 NUMBER_OF_K_FOLD_SPLITS = 1
 OPTIMIZER_TYPE = OptimizerType.ADAM
@@ -62,7 +65,7 @@ BEST_MODEL_FILENAME = "VAE_best"
 # GPU identifiers separated by comma, no spaces.
 GPU_IDS = "0"
 # Maximum allowed memory on one of the GPUs (in GB)
-MAX_GPU_MEMORY_ALLOCATION = 32
+MAX_GPU_MEMORY_ALLOCATION = 5
 # Buffer size used while shuffling the dataset.
 BUFFER_SIZE = 1000
 
