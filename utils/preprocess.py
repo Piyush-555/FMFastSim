@@ -1,5 +1,3 @@
-# TODO: Validate if it works with PyTorch
-
 import h5py
 import numpy as np
 
@@ -53,9 +51,9 @@ def preprocess():
 """
 
 
-def get_condition_arrays(geo, energy_particle, nb_events):
+def get_condition_arrays(geo, energy_particle, angle_particle, nb_events):
     cond_e = [energy_particle / MAX_ENERGY] * nb_events
-    cond_angle = [energy_particle / MAX_ENERGY] * nb_events
+    cond_angle = [angle_particle / MAX_ANGLE] * nb_events
     if geo == "SiW":
         cond_geo = [[0, 1]] * nb_events
     else:  # geo == "SciPb"

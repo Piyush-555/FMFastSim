@@ -1,5 +1,3 @@
-# TODO: Make changes wrt to PyTorch
-
 import gc
 from dataclasses import dataclass, field
 from typing import List, Tuple

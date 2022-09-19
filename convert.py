@@ -1,5 +1,4 @@
 """
-TODO: Make changes wrt to PyTorch
 ** convert **
 defines the conversion function to and ONNX file
 """

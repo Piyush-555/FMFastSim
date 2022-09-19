@@ -1,5 +1,3 @@
-# TODO: Make changes wrt to PyTorch
-
 import os
 from dataclasses import dataclass
 

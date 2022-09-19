@@ -1,5 +1,4 @@
 """
-TODO: Make changes wrt to PyTorch
 ** generate **
 generate showers using a saved VAE model 
 """
@@ -61,7 +60,7 @@ def main():
     # 3. Prepare data. Get condition values. Sample from the prior (normal distribution) in d dimension (d=latent_dim,
     # latent space dimension). Gather them into tuples. Wrap data in Dataset objects. The batch size must now be set
     # on the Dataset objects. Disable AutoShard.
-    e_cond, angle_cond, geo_cond = get_condition_arrays(geometry, energy, events)
+    e_cond, angle_cond, geo_cond = get_condition_arrays(geometry, energy, angle, events)
 
     z_r = np.random.normal(loc=0, scale=1, size=(events, vae.latent_dim))
 

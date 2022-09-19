@@ -1,5 +1,3 @@
-# TODO: Validate if it works with PyTorch
-
 import argparse
 
 import numpy as np

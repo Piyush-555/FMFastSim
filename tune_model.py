@@ -1,5 +1,3 @@
-# TODO: Validate if it works with PyTorch
-
 from argparse import ArgumentParser
 
 from core.constants import MAX_GPU_MEMORY_ALLOCATION, GPU_IDS

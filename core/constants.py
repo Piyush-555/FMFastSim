@@ -15,17 +15,17 @@ SIZE_R = 2.325
 SIZE_Z = 3.4
 
 # Minimum and maximum primary particle energy to consider for training in GeV units.
-MIN_ENERGY = 256
-MAX_ENERGY = 256
+MIN_ENERGY = 1
+MAX_ENERGY = 1024
 # Minimum and maximum primary particle angle to consider for training in degrees units.
-MIN_ANGLE = 70
-MAX_ANGLE = 70
+MIN_ANGLE = 50
+MAX_ANGLE = 90
 
 """
 Directories.
 """
 # Directory to load the full simulation dataset.
-INIT_DIR = "../../eos/geant4/fastSim/Par04_public/HDF5_Zenodo/"
+INIT_DIR = "./dataset/"
 # Directory to save VAE checkpoints
 GLOBAL_CHECKPOINT_DIR = "./checkpoint"
 # Directory to save model after conversion to a format that can be used in C++.
@@ -44,7 +44,7 @@ INLCUDE_PHYSICS_LOSS = False
 ORIGINAL_DIM = N_CELLS_Z * N_CELLS_R * N_CELLS_PHI
 INTERMEDIATE_DIMS = [100, 50, 20, 14]
 LATENT_DIM = 10
-EPOCHS = 1000
+EPOCHS = 300
 LEARNING_RATE = 0.001
 ACTIVATION = "leaky_relu"
 OUT_ACTIVATION = "sigmoid"
@@ -86,4 +86,4 @@ HISTOGRAM_TYPE = "step"
 W&B parameters.
 """
 # Change this to your entity name.
-WANDB_ENTITY = "piyush_555"
+WANDB_ENTITY = "entity-name"

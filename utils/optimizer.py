@@ -1,5 +1,3 @@
-# TODO: Make changes wrt to PyTorch
-
 from enum import IntEnum
 
 from tensorflow.keras.optimizers import Optimizer, Adadelta, Adagrad, Adam, Adamax, Ftrl, SGD, Nadam, RMSprop

@@ -1,5 +1,3 @@
-<!-- # TODO: Validate if it holds for PyTorch -->
-
 # FMFastSim
 Foundational models for fast simulation
 

@@ -1,5 +1,3 @@
-# TODO: Validate if it works with PyTorchfrom dataclasses import dataclass
-
 from typing import Tuple, Dict, Any, List
 
 import numpy as np

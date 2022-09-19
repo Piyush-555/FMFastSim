@@ -1,5 +1,3 @@
-# TODO: Validate if it works with PyTorch
-
 from dataclasses import dataclass
 from typing import Tuple
 
