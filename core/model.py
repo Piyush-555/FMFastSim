@@ -267,6 +267,14 @@ class VAEHandler:
                                              save_weights_only=True,
                                              mode="min",
                                              save_freq="epoch"))
+        if self._save_best_model:
+            callbacks.append(ModelCheckpoint(filepath=f"{self._checkpoint_dir}/VAE_best/model_weights",
+                                             monitor="val_loss",
+                                             verbose=True,
+                                             save_best_only=True,
+                                             save_weights_only=True,
+                                             mode="min",
+                                             save_freq="epoch"))
         # Pass metadata to wandb.
         callbacks.append(WandbCallback(
             monitor="val_loss", verbose=0, mode="auto", save_model=False))
@@ -361,10 +369,6 @@ class VAEHandler:
                                      )
             histories.append(history)
 
-            if self._save_best_model:
-                self.model.save_weights(f"{self._checkpoint_dir}/VAE_fold_{i + 1}/model_weights")
-                print(f"Best model from fold {i + 1} was saved.")
-
             # Remove all unnecessary data from previous fold.
             del self.model
             del train_data
@@ -411,9 +415,6 @@ class VAEHandler:
                                  validation_data=val_data,
                                  callbacks=callbacks
                                  )
-        if self._save_best_model:
-            self.model.save_weights(f"{self._checkpoint_dir}/VAE_best/model_weights")
-            print("Best model was saved.")
 
         return [history]
 
