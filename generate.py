@@ -47,8 +47,8 @@ def main():
 
     # Create a handler and build model.
     # This import must be local because otherwise it is impossible to call GPULimiter.
-    from core.model import VAEHandler
-    vae = VAEHandler()
+    from core.model import VAEHandler, TransformerV1
+    vae = TransformerV1()
 
     # Load the saved weights
     weights_dir = f"VAE_epoch_{epoch:03}" if epoch is not None else "VAE_best"

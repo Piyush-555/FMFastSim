@@ -8,6 +8,7 @@ import wandb
 from sklearn.model_selection import KFold
 from tensorflow.keras import backend as K
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, History, Callback
+from tensorflow.keras import layers
 from tensorflow.keras.layers import BatchNormalization, Input, Dense, Layer, concatenate
 from tensorflow.keras.losses import BinaryCrossentropy, Reduction, MeanSquaredError
 from tensorflow.keras.models import Model
@@ -15,6 +16,7 @@ from tensorflow.python.data import Dataset
 from tensorflow.python.distribute.distribute_lib import Strategy
 from tensorflow.python.distribute.mirrored_strategy import MirroredStrategy
 from wandb.keras import WandbCallback
+from einops.layers.keras import Rearrange as RearrangeEinops
 
 from core.constants import ORIGINAL_DIM, LATENT_DIM, BATCH_SIZE_PER_REPLICA, EPOCHS, LEARNING_RATE, ACTIVATION, \
     OUT_ACTIVATION, OPTIMIZER_TYPE, KERNEL_INITIALIZER, GLOBAL_CHECKPOINT_DIR, EARLY_STOP, BIAS_INITIALIZER, \
@@ -445,3 +447,90 @@ class VAEHandler:
             return self._k_fold_training(dataset, e_cond, angle_cond, geo_cond, noise, callbacks, verbose)
         else:
             return self._single_training(dataset, e_cond, angle_cond, geo_cond, noise, callbacks, verbose)
+
+
+def TransformerEncoderBlock(inputs, num_heads, projection_dim, dropout=0.1):
+    # Layer normalization 1.
+    x1 = layers.LayerNormalization(epsilon=1e-6)(inputs)
+    # Create a multi-head attention layer.
+    attention_output = layers.MultiHeadAttention(
+        num_heads=num_heads, key_dim=projection_dim, dropout=dropout)(x1, x1)
+    # Skip connection 1.
+    x2 = layers.Add()([attention_output, inputs])
+    # Layer normalization 2.
+    x3 = layers.LayerNormalization(epsilon=1e-6)(x2)
+    # MLP.
+    x3 = mlp(x3, hidden_units=[projection_dim,], dropout_rate=dropout)
+    # Skip connection 2.
+    return layers.Add()([x3, x2])
+
+
+def mlp(x, hidden_units, dropout_rate):
+    for units in hidden_units:
+        x = layers.Dense(units, activation=tf.nn.gelu)(x)
+        x = layers.Dropout(dropout_rate)(x)
+    return x
+
+class PatchEncoder(Layer):
+    def __init__(self, num_patches, projection_dim):
+        super(PatchEncoder, self).__init__()
+        self.num_patches = num_patches
+        self.projection = layers.Dense(units=projection_dim)
+        self.position_embedding = layers.Embedding(
+            input_dim=num_patches, output_dim=projection_dim
+        )
+
+    def call(self, patch):
+        positions = tf.range(start=0, limit=self.num_patches, delta=1)
+        encoded = self.projection(patch) + self.position_embedding(positions)
+        return encoded
+
+
+class TransformerV1(VAEHandler):
+    def _build_encoder(self) -> Model:
+        """ Based on a list of intermediate dimensions, activation function and initializers for kernel and bias builds
+        the encoder.
+
+        Returns:
+             Encoder is returned as a keras.Model.
+
+        """
+        with self._strategy.scope():
+            # Prepare input layer.
+            x_input, e_input, angle_input, geo_input, eps_input = self._prepare_input_layers(for_encoder=True)
+
+            # Patchify and concatenate
+            _x_input = layers.Reshape((N_CELLS_R, N_CELLS_PHI, N_CELLS_Z))(x_input)
+            patchified = RearrangeEinops("b (i r) (j p) (k z) -> b (i j k) (r p z)", i=3, j=5, k=5)(_x_input)
+            _e_input = layers.Reshape((1, 540))(layers.RepeatVector(540)(e_input))
+            _angle_input = layers.Reshape((1, 540))(layers.RepeatVector(540)(angle_input))
+            _geo_input = layers.Reshape((2, 540))(layers.RepeatVector(540)(geo_input))
+            patches_combined = concatenate([patchified, _e_input, _angle_input, _geo_input], axis=-2)
+
+            # Linear projection and positional embeddings
+            encoded_patches = PatchEncoder(75 + 4, 256)(patches_combined)
+
+            # Transformer Encoder
+            x = TransformerEncoderBlock(encoded_patches, 4, 256)
+            x = Dense(64)(x)
+            x = TransformerEncoderBlock(x, 8, 64)
+            x = Dense(16)(x)
+            x = TransformerEncoderBlock(x, 16, 16)
+
+            # Handling transformer representations
+            representation = layers.LayerNormalization(epsilon=1e-6)(x)
+            representation = layers.Flatten()(representation)
+            representation = layers.Dropout(0.2)(representation)
+
+            # Add Dense layer to get description of multidimensional Gaussian distribution in terms of mean
+            # and log(variance).
+            z_mean = Dense(self.latent_dim, name="z_mean")(representation)
+            z_log_var = Dense(self.latent_dim, name="z_log_var")(representation)
+            # Add KLDivergenceLayer responsible for calculation of KL loss.
+            z_mean, z_log_var = _KLDivergenceLayer()([z_mean, z_log_var])
+            # Sample a probe from the distribution.
+            encoder_output = _Sampling()([z_mean, z_log_var, eps_input])
+            # Create model.
+            encoder = Model(inputs=[x_input, e_input, angle_input, geo_input, eps_input], outputs=encoder_output,
+                            name="encoder")
+        return encoder
