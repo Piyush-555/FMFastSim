@@ -34,8 +34,8 @@ def main():
     # 3. Manufacture model handler.
 
     # This import must be local because otherwise it is impossible to call GPULimiter.
-    from core.model import TransformerV1
-    vae = TransformerV1(_wandb_project_name=study_name, _wandb_tags=["single training"], _checkpoint_dir=checkpoint_dir)
+    from core.model import VAEHandler, TransformerV1, TransformerV2
+    vae = TransformerV2(_wandb_project_name=study_name, _wandb_tags=["single training"], _checkpoint_dir=checkpoint_dir)
     # import pdb; pdb.set_trace()
 
     # 4. Train model.

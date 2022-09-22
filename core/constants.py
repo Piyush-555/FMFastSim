@@ -15,17 +15,17 @@ SIZE_R = 2.325
 SIZE_Z = 3.4
 
 # Minimum and maximum primary particle energy to consider for training in GeV units.
-MIN_ENERGY = 1
-MAX_ENERGY = 1024
+MIN_ENERGY = 64
+MAX_ENERGY = 256
 # Minimum and maximum primary particle angle to consider for training in degrees units.
-MIN_ANGLE = 50
-MAX_ANGLE = 90
+MIN_ANGLE = 70
+MAX_ANGLE = 70
 
 """
 Directories.
 """
 # Directory to load the full simulation dataset.
-INIT_DIR = "./dataset/"
+INIT_DIR = "../eos/geant4/fastSim/Par04_public/HDF5_Zenodo/"
 # Directory to save VAE checkpoints
 GLOBAL_CHECKPOINT_DIR = "./checkpoint"
 # Directory to save model after conversion to a format that can be used in C++.
@@ -38,7 +38,7 @@ GEN_DIR = "./generation"
 """
 Model default parameters.
 """
-BATCH_SIZE_PER_REPLICA = 128
+BATCH_SIZE_PER_REPLICA = 256
 INLCUDE_PHYSICS_LOSS = False
 # Total number of readout cells (represents the number of nodes in the input/output layers of the model).
 ORIGINAL_DIM = N_CELLS_Z * N_CELLS_R * N_CELLS_PHI
@@ -67,6 +67,19 @@ MAX_GPU_MEMORY_ALLOCATION = 32
 BUFFER_SIZE = 1000
 
 """
+Transformer parameters.
+"""
+NUM_LAYERS = 6
+NUM_HEADS = NUM_LAYERS * [8]
+PROJECTION_DIM = 256
+FF_DIMS = NUM_LAYERS * [[256, 256]]
+MASKING_PERCENT = 0.25
+MASK_AFTER_EMBEDDING = False
+PATCH_R = 3
+PATCH_P = 5
+PATCH_Z = 5
+
+"""
 Optimizer parameters.
 """
 N_TRIALS = 50
@@ -86,4 +99,4 @@ HISTOGRAM_TYPE = "step"
 W&B parameters.
 """
 # Change this to your entity name.
-WANDB_ENTITY = "entity-name"
+WANDB_ENTITY = "piyush_555"

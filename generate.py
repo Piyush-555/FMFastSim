@@ -8,9 +8,9 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.python.data import Dataset
 
-from core.constants import GLOBAL_CHECKPOINT_DIR, GEN_DIR, BATCH_SIZE_PER_REPLICA, MAX_GPU_MEMORY_ALLOCATION, GPU_IDS
+from core.constants import GLOBAL_CHECKPOINT_DIR, GEN_DIR, BATCH_SIZE_PER_REPLICA, MAX_GPU_MEMORY_ALLOCATION, GPU_IDS, INIT_DIR
 from utils.gpu_limiter import GPULimiter
-from utils.preprocess import get_condition_arrays
+from utils.preprocess import get_condition_arrays, load_showers
 
 
 def parse_args():
@@ -47,7 +47,7 @@ def main():
 
     # Create a handler and build model.
     # This import must be local because otherwise it is impossible to call GPULimiter.
-    from core.model import VAEHandler, TransformerV1
+    from core.model import VAEHandler, TransformerV1, TransformerV2
     vae = TransformerV1()
 
     # Load the saved weights
@@ -55,16 +55,24 @@ def main():
     vae.model.load_weights(f"{GLOBAL_CHECKPOINT_DIR}/{study_name}/{weights_dir}/model_weights").expect_partial()
 
     # The generator is defined as the decoder part only
-    generator = vae.model.decoder
+    if isinstance(vae, TransformerV2):
+        generator = vae.model
+    else:
+        generator = vae.model.decoder
 
     # 3. Prepare data. Get condition values. Sample from the prior (normal distribution) in d dimension (d=latent_dim,
     # latent space dimension). Gather them into tuples. Wrap data in Dataset objects. The batch size must now be set
     # on the Dataset objects. Disable AutoShard.
+    e_layer_g4 = load_showers(INIT_DIR, geometry, energy, angle)
+    e_layer_g4 = e_layer_g4.reshape(e_layer_g4.shape[0], -1)
     e_cond, angle_cond, geo_cond = get_condition_arrays(geometry, energy, angle, events)
 
     z_r = np.random.normal(loc=0, scale=1, size=(events, vae.latent_dim))
 
-    data = ((z_r, e_cond, angle_cond, geo_cond),)
+    if isinstance(vae, TransformerV2):
+        data = ((e_layer_g4, e_cond, angle_cond, geo_cond, z_r),)
+    else:
+        data = ((z_r, e_cond, angle_cond, geo_cond),)
 
     data = Dataset.from_tensor_slices(data)
 

@@ -21,7 +21,8 @@ from einops.layers.keras import Rearrange as RearrangeEinops
 from core.constants import ORIGINAL_DIM, LATENT_DIM, BATCH_SIZE_PER_REPLICA, EPOCHS, LEARNING_RATE, ACTIVATION, \
     OUT_ACTIVATION, OPTIMIZER_TYPE, KERNEL_INITIALIZER, GLOBAL_CHECKPOINT_DIR, EARLY_STOP, BIAS_INITIALIZER, \
     INTERMEDIATE_DIMS, SAVE_MODEL_EVERY_EPOCH, SAVE_BEST_MODEL, PATIENCE, MIN_DELTA, BEST_MODEL_FILENAME, \
-    NUMBER_OF_K_FOLD_SPLITS, VALIDATION_SPLIT, WANDB_ENTITY, N_CELLS_R, N_CELLS_PHI, N_CELLS_Z, INLCUDE_PHYSICS_LOSS
+    NUMBER_OF_K_FOLD_SPLITS, VALIDATION_SPLIT, WANDB_ENTITY, N_CELLS_R, N_CELLS_PHI, N_CELLS_Z, INLCUDE_PHYSICS_LOSS, \
+    NUM_LAYERS, NUM_HEADS, PROJECTION_DIM, FF_DIMS, MASKING_PERCENT, MASK_AFTER_EMBEDDING, PATCH_R, PATCH_P, PATCH_Z
 from utils.optimizer import OptimizerFactory, OptimizerType
 
 
@@ -450,7 +451,7 @@ class VAEHandler:
             return self._single_training(dataset, e_cond, angle_cond, geo_cond, noise, callbacks, verbose)
 
 
-def TransformerEncoderBlock(inputs, num_heads, projection_dim, dropout=0.1):
+def TransformerEncoderBlock(inputs, num_heads, projection_dim, ff_dims, dropout=0.1):
     # Layer normalization 1.
     x1 = layers.LayerNormalization(epsilon=1e-6)(inputs)
     # Create a multi-head attention layer.
@@ -461,7 +462,7 @@ def TransformerEncoderBlock(inputs, num_heads, projection_dim, dropout=0.1):
     # Layer normalization 2.
     x3 = layers.LayerNormalization(epsilon=1e-6)(x2)
     # MLP.
-    x3 = mlp(x3, hidden_units=[projection_dim,], dropout_rate=dropout)
+    x3 = mlp(x3, hidden_units=ff_dims, dropout_rate=dropout)
     # Skip connection 2.
     return layers.Add()([x3, x2])
 
@@ -471,6 +472,7 @@ def mlp(x, hidden_units, dropout_rate):
         x = layers.Dense(units, activation=tf.nn.gelu)(x)
         x = layers.Dropout(dropout_rate)(x)
     return x
+
 
 class PatchEncoder(Layer):
     def __init__(self, num_patches, projection_dim):
@@ -499,24 +501,26 @@ class TransformerV1(VAEHandler):
         with self._strategy.scope():
             # Prepare input layer.
             x_input, e_input, angle_input, geo_input, eps_input = self._prepare_input_layers(for_encoder=True)
+            num_patches = PATCH_R * PATCH_P * PATCH_Z
+            feature_dim = (N_CELLS_R * N_CELLS_PHI * N_CELLS_Z) // num_patches
 
             # Patchify and concatenate
             _x_input = layers.Reshape((N_CELLS_R, N_CELLS_PHI, N_CELLS_Z))(x_input)
-            patchified = RearrangeEinops("b (i r) (j p) (k z) -> b (i j k) (r p z)", i=3, j=5, k=5)(_x_input)
-            _e_input = layers.Reshape((1, 540))(layers.RepeatVector(540)(e_input))
-            _angle_input = layers.Reshape((1, 540))(layers.RepeatVector(540)(angle_input))
-            _geo_input = layers.Reshape((2, 540))(layers.RepeatVector(540)(geo_input))
+            patchified = RearrangeEinops("b (i r) (j p) (k z) -> b (i j k) (r p z)", i=PATCH_R, j=PATCH_P, k=PATCH_Z)(_x_input)
+            _e_input = layers.Reshape((1, feature_dim))(layers.RepeatVector(feature_dim)(e_input))
+            _angle_input = layers.Reshape((1, feature_dim))(layers.RepeatVector(feature_dim)(angle_input))
+            _geo_input = layers.Reshape((2, feature_dim))(layers.RepeatVector(feature_dim)(geo_input))
             patches_combined = concatenate([patchified, _e_input, _angle_input, _geo_input], axis=-2)
 
             # Linear projection and positional embeddings
-            encoded_patches = PatchEncoder(75 + 4, 256)(patches_combined)
+            encoded_patches = PatchEncoder(num_patches + 4, 256)(patches_combined)
 
             # Transformer Encoder
-            x = TransformerEncoderBlock(encoded_patches, 4, 256)
+            x = TransformerEncoderBlock(encoded_patches, 4, 256, [256,])
             x = Dense(64)(x)
-            x = TransformerEncoderBlock(x, 8, 64)
+            x = TransformerEncoderBlock(x, 8, 64, [64,])
             x = Dense(16)(x)
-            x = TransformerEncoderBlock(x, 16, 16)
+            x = TransformerEncoderBlock(x, 16, 16, [16,])
 
             # Handling transformer representations
             representation = layers.LayerNormalization(epsilon=1e-6)(x)
@@ -535,3 +539,69 @@ class TransformerV1(VAEHandler):
             encoder = Model(inputs=[x_input, e_input, angle_input, geo_input, eps_input], outputs=encoder_output,
                             name="encoder")
         return encoder
+
+
+class MaskedPatchEncoder(PatchEncoder):
+    def __init__(self, mask_percent=0.75, mask_after_embedding=True, *args):
+        super().__init__(*args)
+        self.mask_percent = mask_percent
+        self.mask_after_embedding = mask_after_embedding
+
+    def call(self, patch):
+        positions = tf.range(start=0, limit=self.num_patches, delta=1)
+        mask = tf.random.uniform(shape=[self.num_patches,]) < self.mask_percent
+        mask = tf.cast(tf.reshape(~mask, (-1, 1)), tf.float32)
+        if not self.mask_after_embedding:
+            patch = patch * mask
+        encoded = self.projection(patch) + self.position_embedding(positions)
+        if self.mask_after_embedding:
+            patch = patch * mask
+        return encoded
+
+
+class TransformerV2(VAEHandler):
+    def __post_init__(self):
+        self._num_layers = NUM_LAYERS
+        self._num_heads = NUM_HEADS
+        self._projection_dim = PROJECTION_DIM
+        self._ff_dims = FF_DIMS
+        super().__post_init__()
+
+    def _build_transformer(self) -> Model:
+        # with self._strategy.scope(): TODO
+        # Prepare input layer.
+        x_input, e_input, angle_input, geo_input, eps_input = self._prepare_input_layers(for_encoder=True)
+        num_patches = PATCH_R * PATCH_P * PATCH_Z
+        feature_dim = (N_CELLS_R * N_CELLS_PHI * N_CELLS_Z) / num_patches
+
+        # Patchify
+        _x_input = layers.Reshape((N_CELLS_R, N_CELLS_PHI, N_CELLS_Z))(x_input)
+        patchified = RearrangeEinops("b (i r) (j p) (k z) -> b (i j k) (r p z)", i=PATCH_R, j=PATCH_P, k=PATCH_Z)(_x_input)
+
+        # Masking, Linear projection and positional embeddings
+        x = MaskedPatchEncoder(MASKING_PERCENT, MASK_AFTER_EMBEDDING, num_patches, self._projection_dim)(patchified)
+
+        # Transformer Encoder
+        for i in range(self._num_layers):
+            x = TransformerEncoderBlock(x, self._num_heads[i], self._projection_dim, self._ff_dims[i])
+
+        # Final layers
+        x = layers.LayerNormalization(epsilon=1e-6)(x)
+        x = Dense(feature_dim, activation=tf.nn.gelu)(x)
+        x = Dense(feature_dim, activation='sigmoid')(x)
+        x = RearrangeEinops("b (i j k) (r p z) -> b (i r) (j p) (k z)",
+            i=PATCH_R, j=PATCH_P, k=PATCH_Z, r=N_CELLS_R//PATCH_R, p=N_CELLS_PHI//PATCH_P, z=N_CELLS_Z//PATCH_Z)(x)
+        out = layers.Reshape((-1,))(x)
+
+        transformer = Model(inputs=[x_input, e_input, angle_input, geo_input, eps_input], outputs=out,
+                        name="transformer")
+        return transformer
+
+    def _build_and_compile_new_model(self):
+        # # Compile model within a distributed strategy.
+        # with self._strategy.scope():
+        # Build transformer.
+        self.model = self._build_transformer()
+        # Manufacture an optimizer and compile model with.
+        optimizer = OptimizerFactory.create_optimizer(self._optimizer_type, self._learning_rate)
+        self.model.compile(optimizer=optimizer, loss=BinaryCrossentropy(reduction=Reduction.SUM))
