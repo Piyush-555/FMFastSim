@@ -1,12 +1,13 @@
 from argparse import ArgumentParser
 
-from core.constants import GPU_IDS, MAX_GPU_MEMORY_ALLOCATION, GLOBAL_CHECKPOINT_DIR
+from core.constants import GPU_IDS, MAX_GPU_MEMORY_ALLOCATION, GLOBAL_CHECKPOINT_DIR, MODEL_TYPE
 from utils.gpu_limiter import GPULimiter
 from utils.preprocess import preprocess
 
 
 def parse_args():
     argument_parser = ArgumentParser()
+    argument_parser.add_argument("--model-type", type=str, default=MODEL_TYPE)
     argument_parser.add_argument("--max-gpu-memory-allocation", type=int, default=MAX_GPU_MEMORY_ALLOCATION)
     argument_parser.add_argument("--gpu-ids", type=str, default=GPU_IDS)
     argument_parser.add_argument("--study-name", type=str, default="default_study_name")
@@ -17,6 +18,7 @@ def parse_args():
 def main():
     # 0. Parse arguments.
     args = parse_args()
+    model_type = args.model_type
     max_gpu_memory_allocation = args.max_gpu_memory_allocation
     gpu_ids = args.gpu_ids
     study_name = args.study_name
@@ -32,18 +34,18 @@ def main():
     energies_train, cond_e_train, cond_angle_train, cond_geo_train = preprocess()
 
     # 3. Manufacture model handler.
-
     # This import must be local because otherwise it is impossible to call GPULimiter.
-    from core.model import VAEHandler, TransformerV1, TransformerV2
-    vae = TransformerV2(_wandb_project_name=study_name, _wandb_tags=["single training"], _checkpoint_dir=checkpoint_dir)
+    from core.models import ResolveModel
+    model_handler = ResolveModel(model_type)(
+        _wandb_project_name=study_name, _wandb_tags=["single training"], _checkpoint_dir=checkpoint_dir)
     # import pdb; pdb.set_trace()
 
     # 4. Train model.
-    histories = vae.train(energies_train,
-                          cond_e_train,
-                          cond_angle_train,
-                          cond_geo_train
-                          )
+    histories = model_handler.train(energies_train,
+                                    cond_e_train,
+                                    cond_angle_train,
+                                    cond_geo_train
+                                )
 
     # Note : One history object can be used to plot the loss evaluation as function of the epochs. Remember that the
     # function returns a list of those objects. Each of them represents a different fold of cross validation.

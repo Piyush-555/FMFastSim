@@ -38,21 +38,16 @@ GEN_DIR = "./generation"
 """
 Model default parameters.
 """
+MODEL_TYPE = 'TransformerVAE'
 BATCH_SIZE_PER_REPLICA = 256
 INLCUDE_PHYSICS_LOSS = False
 # Total number of readout cells (represents the number of nodes in the input/output layers of the model).
 ORIGINAL_DIM = N_CELLS_Z * N_CELLS_R * N_CELLS_PHI
-INTERMEDIATE_DIMS = [100, 50, 20, 14]
-LATENT_DIM = 10
-EPOCHS = 300
+EPOCHS = 500
 LEARNING_RATE = 0.001
-ACTIVATION = "leaky_relu"
-OUT_ACTIVATION = "sigmoid"
 VALIDATION_SPLIT = 0.10
 NUMBER_OF_K_FOLD_SPLITS = 1
 OPTIMIZER_TYPE = OptimizerType.ADAM
-KERNEL_INITIALIZER = "RandomNormal"
-BIAS_INITIALIZER = "Zeros"
 EARLY_STOP = False
 SAVE_BEST_MODEL = True
 SAVE_MODEL_EVERY_EPOCH = False
@@ -65,6 +60,17 @@ GPU_IDS = "0"
 MAX_GPU_MEMORY_ALLOCATION = 32
 # Buffer size used while shuffling the dataset.
 BUFFER_SIZE = 1000
+
+"""
+VAE params
+"""
+INTERMEDIATE_DIMS = [100, 50, 20, 14]
+LATENT_DIM = 10  # Also applicable to TransformerVAE
+ACTIVATION = "leaky_relu"
+OUT_ACTIVATION = "sigmoid"
+KERNEL_INITIALIZER = "RandomNormal"
+BIAS_INITIALIZER = "Zeros"
+
 
 """
 Transformer parameters.

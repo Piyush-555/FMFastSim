@@ -8,13 +8,14 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.python.data import Dataset
 
-from core.constants import GLOBAL_CHECKPOINT_DIR, GEN_DIR, BATCH_SIZE_PER_REPLICA, MAX_GPU_MEMORY_ALLOCATION, GPU_IDS, INIT_DIR
+from core.constants import GLOBAL_CHECKPOINT_DIR, GEN_DIR, BATCH_SIZE_PER_REPLICA, MAX_GPU_MEMORY_ALLOCATION, GPU_IDS, INIT_DIR, MODEL_TYPE
 from utils.gpu_limiter import GPULimiter
 from utils.preprocess import get_condition_arrays, load_showers
 
 
 def parse_args():
     argument_parser = argparse.ArgumentParser()
+    argument_parser.add_argument("--model-type", type=str, default=MODEL_TYPE)
     argument_parser.add_argument("--geometry", type=str, default="")
     argument_parser.add_argument("--energy", type=int, default="")
     argument_parser.add_argument("--angle", type=int, default="")
@@ -31,6 +32,7 @@ def parse_args():
 def main():
     # 0. Parse arguments.
     args = parse_args()
+    model_type = args.model_type
     energy = args.energy
     angle = args.angle
     geometry = args.geometry
@@ -47,18 +49,15 @@ def main():
 
     # Create a handler and build model.
     # This import must be local because otherwise it is impossible to call GPULimiter.
-    from core.model import VAEHandler, TransformerV1, TransformerV2
-    vae = TransformerV1()
+    from core.models import ResolveModel
+    model_handler = ResolveModel(model_type)()
 
     # Load the saved weights
     weights_dir = f"VAE_epoch_{epoch:03}" if epoch is not None else "VAE_best"
-    vae.model.load_weights(f"{GLOBAL_CHECKPOINT_DIR}/{study_name}/{weights_dir}/model_weights").expect_partial()
+    model_handler.model.load_weights(f"{GLOBAL_CHECKPOINT_DIR}/{study_name}/{weights_dir}/model_weights").expect_partial()
 
     # The generator is defined as the decoder part only
-    if isinstance(vae, TransformerV2):
-        generator = vae.model
-    else:
-        generator = vae.model.decoder
+    generator = model_handler.get_decoder()
 
     # 3. Prepare data. Get condition values. Sample from the prior (normal distribution) in d dimension (d=latent_dim,
     # latent space dimension). Gather them into tuples. Wrap data in Dataset objects. The batch size must now be set
@@ -67,12 +66,11 @@ def main():
     e_layer_g4 = e_layer_g4.reshape(e_layer_g4.shape[0], -1)
     e_cond, angle_cond, geo_cond = get_condition_arrays(geometry, energy, angle, events)
 
-    z_r = np.random.normal(loc=0, scale=1, size=(events, vae.latent_dim))
-
-    if isinstance(vae, TransformerV2):
-        data = ((e_layer_g4, e_cond, angle_cond, geo_cond, z_r),)
-    else:
+    if hasattr(model_handler, 'latent_dim'):
+        z_r = np.random.normal(loc=0, scale=1, size=(events, model_handler.latent_dim))
         data = ((z_r, e_cond, angle_cond, geo_cond),)
+    else:
+        data = ((e_layer_g4,),)
 
     data = Dataset.from_tensor_slices(data)
 
