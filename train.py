@@ -10,6 +10,7 @@ def parse_args():
     argument_parser.add_argument("--model-type", type=str, default=MODEL_TYPE)
     argument_parser.add_argument("--max-gpu-memory-allocation", type=int, default=MAX_GPU_MEMORY_ALLOCATION)
     argument_parser.add_argument("--gpu-ids", type=str, default=GPU_IDS)
+    argument_parser.add_argument("--run-name", type=str, default=None)  # randomly chosen by wandb
     argument_parser.add_argument("--study-name", type=str, default="default_study_name")
     args = argument_parser.parse_args()
     return args
@@ -22,6 +23,7 @@ def main():
     max_gpu_memory_allocation = args.max_gpu_memory_allocation
     gpu_ids = args.gpu_ids
     study_name = args.study_name
+    run_name = args.run_name
     checkpoint_dir = f"{GLOBAL_CHECKPOINT_DIR}/{study_name}"
 
     # 1. Set GPU memory limits.
@@ -37,7 +39,9 @@ def main():
     # This import must be local because otherwise it is impossible to call GPULimiter.
     from core.models import ResolveModel
     model_handler = ResolveModel(model_type)(
-        _wandb_project_name=study_name, _wandb_tags=["single training"], _checkpoint_dir=checkpoint_dir)
+        _wandb_run_name=run_name, _wandb_project_name=study_name, \
+        _wandb_tags=["single training"], _checkpoint_dir=checkpoint_dir
+        )
     # import pdb; pdb.set_trace()
 
     # 4. Train model.

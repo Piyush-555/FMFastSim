@@ -18,7 +18,7 @@ from core import models
 from utils.optimizer import OptimizerType
 from core.constants import ORIGINAL_DIM, BATCH_SIZE_PER_REPLICA, EPOCHS, LEARNING_RATE, \
     OPTIMIZER_TYPE, GLOBAL_CHECKPOINT_DIR, EARLY_STOP, SAVE_MODEL_EVERY_EPOCH, SAVE_BEST_MODEL, \
-    PATIENCE, MIN_DELTA, BEST_MODEL_FILENAME, NUMBER_OF_K_FOLD_SPLITS, VALIDATION_SPLIT, WANDB_ENTITY
+    PATIENCE, MIN_DELTA, NUMBER_OF_K_FOLD_SPLITS, VALIDATION_SPLIT, WANDB_ENTITY
 
 
 def ResolveModel(model_type):
@@ -37,6 +37,7 @@ class ModelHandler:
     """
     Class to handle building and training of models.
     """
+    _wandb_run_name: str = None
     _wandb_project_name: str = None
     _wandb_tags: List[str] = field(default_factory=list)
     _original_dim: int = ORIGINAL_DIM
@@ -51,7 +52,6 @@ class ModelHandler:
     _save_best_model: bool = SAVE_BEST_MODEL
     _patience: int = PATIENCE
     _min_delta: float = MIN_DELTA
-    _best_model_filename: str = BEST_MODEL_FILENAME
     _validation_split: float = VALIDATION_SPLIT
     _strategy: Strategy = MirroredStrategy()
 
@@ -73,7 +73,7 @@ class ModelHandler:
         config.update(self._get_wandb_extra_config())
         # Reinit flag is needed for hyperparameter tuning. Whenever new training is started, new Wandb run should be
         # created.
-        wandb.init(project=self._wandb_project_name, entity=WANDB_ENTITY, reinit=True, config=config,
+        wandb.init(name=self._wandb_run_name, project=self._wandb_project_name, entity=WANDB_ENTITY, reinit=True, config=config,
                    tags=self._wandb_tags)
     
     def _get_wandb_extra_config(self):
@@ -131,14 +131,14 @@ class ModelHandler:
                               restore_best_weights=True))
         # Save model after every epoch.
         if self._save_model_every_epoch:
-            callbacks.append(ModelCheckpoint(filepath=f"{self._checkpoint_dir}/VAE_epoch_{{epoch:03}}/model_weights",
+            callbacks.append(ModelCheckpoint(filepath=f"{self._checkpoint_dir}/Epoch_{{epoch:03}}/model_weights",
                                              monitor="val_loss",
                                              verbose=True,
                                              save_weights_only=True,
                                              mode="min",
                                              save_freq="epoch"))
         if self._save_best_model:
-            callbacks.append(ModelCheckpoint(filepath=f"{self._checkpoint_dir}/VAE_best/model_weights",
+            callbacks.append(ModelCheckpoint(filepath=f"{self._checkpoint_dir}/Best/model_weights",
                                              monitor="val_loss",
                                              verbose=True,
                                              save_best_only=True,

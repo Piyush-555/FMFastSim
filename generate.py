@@ -53,7 +53,7 @@ def main():
     model_handler = ResolveModel(model_type)()
 
     # Load the saved weights
-    weights_dir = f"VAE_epoch_{epoch:03}" if epoch is not None else "VAE_best"
+    weights_dir = f"Epoch_{epoch:03}" if epoch is not None else "Best"
     model_handler.model.load_weights(f"{GLOBAL_CHECKPOINT_DIR}/{study_name}/{weights_dir}/model_weights").expect_partial()
 
     # The generator is defined as the decoder part only
@@ -86,7 +86,7 @@ def main():
     generated_events = generator.predict(data) * (energy * 1000)
 
     # 5. Save the generated showers.
-    np.save(f"{GEN_DIR}/VAE_Generated_Geo_{geometry}_E_{energy}_Angle_{angle}.npy", generated_events)
+    np.save(f"{GEN_DIR}/Geo_{geometry}_E_{energy}_Angle_{angle}.npy", generated_events)
 
 
 if __name__ == "__main__":

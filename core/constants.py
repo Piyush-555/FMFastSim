@@ -53,7 +53,6 @@ SAVE_BEST_MODEL = True
 SAVE_MODEL_EVERY_EPOCH = False
 PATIENCE = 10
 MIN_DELTA = 0.01
-BEST_MODEL_FILENAME = "VAE_best"
 # GPU identifiers separated by comma, no spaces.
 GPU_IDS = "0"
 # Maximum allowed memory on one of the GPUs (in GB)
