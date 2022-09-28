@@ -28,6 +28,33 @@ def parse_args():
     return args
 
 
+def generate(generator, energy, angle, geometry, num_events, latent_dim=None, e_layer_g4=None):
+    # 3. Prepare data. Get condition values. Sample from the prior (normal distribution) in d dimension (d=latent_dim,
+    # latent space dimension). Gather them into tuples. Wrap data in Dataset objects. The batch size must now be set
+    # on the Dataset objects. Disable AutoShard.
+    if latent_dim:
+        e_cond, angle_cond, geo_cond = get_condition_arrays(geometry, energy, angle, num_events)
+        z_r = np.random.normal(loc=0, scale=1, size=(num_events, latent_dim))
+        data = ((z_r, e_cond, angle_cond, geo_cond),)
+    else:
+        e_layer_g4 = e_layer_g4.reshape(e_layer_g4.shape[0], -1)
+        data = ((e_layer_g4,),)
+
+    data = Dataset.from_tensor_slices(data)
+
+    batch_size = BATCH_SIZE_PER_REPLICA
+
+    data = data.batch(batch_size)
+
+    options = tf.data.Options()
+    options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.OFF
+    data = data.with_options(options)
+
+    # 4. Generate showers using the VAE model.
+    generated_events = generator.predict(data) * (energy * 1000)
+    return generated_events
+
+
 # main function
 def main():
     # 0. Parse arguments.
@@ -59,31 +86,12 @@ def main():
     # The generator is defined as the decoder part only
     generator = model_handler.get_decoder()
 
-    # 3. Prepare data. Get condition values. Sample from the prior (normal distribution) in d dimension (d=latent_dim,
-    # latent space dimension). Gather them into tuples. Wrap data in Dataset objects. The batch size must now be set
-    # on the Dataset objects. Disable AutoShard.
-    e_layer_g4 = load_showers(INIT_DIR, geometry, energy, angle)
-    e_layer_g4 = e_layer_g4.reshape(e_layer_g4.shape[0], -1)
-    e_cond, angle_cond, geo_cond = get_condition_arrays(geometry, energy, angle, events)
+    latent_dim = getattr(model_handler, 'latent_dim', None)
+    e_layer_g4 = None
+    if not latent_dim:
+        e_layer_g4 = load_showers(INIT_DIR, geometry, energy, angle)
 
-    if hasattr(model_handler, 'latent_dim'):
-        z_r = np.random.normal(loc=0, scale=1, size=(events, model_handler.latent_dim))
-        data = ((z_r, e_cond, angle_cond, geo_cond),)
-    else:
-        data = ((e_layer_g4,),)
-
-    data = Dataset.from_tensor_slices(data)
-
-    batch_size = BATCH_SIZE_PER_REPLICA
-
-    data = data.batch(batch_size)
-
-    options = tf.data.Options()
-    options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.OFF
-    data = data.with_options(options)
-
-    # 4. Generate showers using the VAE model.
-    generated_events = generator.predict(data) * (energy * 1000)
+    generated_events = generate(generator, energy, angle, geometry, events, latent_dim, e_layer_g4)
 
     # 5. Save the generated showers.
     np.save(f"{GEN_DIR}/Geo_{geometry}_E_{energy}_Angle_{angle}.npy", generated_events)

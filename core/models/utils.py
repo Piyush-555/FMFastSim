@@ -61,3 +61,16 @@ def mlp(x, hidden_units, dropout_rate):
         x = layers.Dense(units, activation=tf.nn.gelu)(x)
         x = layers.Dropout(dropout_rate)(x)
     return x
+
+"""
+Miscellaneous
+"""
+class DummyArgParse:
+    def __init__(self):
+        pass
+
+    def __setarr__(self, key, value):
+        self.key = value
+
+    def __getarr__(self, key):
+        return self.key

@@ -15,10 +15,14 @@ from tensorflow.python.distribute.mirrored_strategy import MirroredStrategy
 from wandb.keras import WandbCallback
 
 from core import models
+from validate import validate
+from generate import generate
+from utils.preprocess import load_showers
 from utils.optimizer import OptimizerType
 from core.constants import ORIGINAL_DIM, BATCH_SIZE_PER_REPLICA, EPOCHS, LEARNING_RATE, \
     OPTIMIZER_TYPE, GLOBAL_CHECKPOINT_DIR, EARLY_STOP, SAVE_MODEL_EVERY_EPOCH, SAVE_BEST_MODEL, \
-    PATIENCE, MIN_DELTA, NUMBER_OF_K_FOLD_SPLITS, VALIDATION_SPLIT, WANDB_ENTITY
+    PATIENCE, MIN_DELTA, NUMBER_OF_K_FOLD_SPLITS, VALIDATION_SPLIT, WANDB_ENTITY, INIT_DIR, \
+    VALID_DIR, PLOT_FREQ, PLOT_CONFIG
 
 
 def ResolveModel(model_type):
@@ -147,7 +151,13 @@ class ModelHandler:
                                              save_freq="epoch"))
         # Pass metadata to wandb.
         callbacks.append(WandbCallback(
-            monitor="val_loss", verbose=0, mode="auto", save_model=False))
+            monitor="val_loss", verbose=0, mode="min", save_model=False))
+
+        for angle, energy, geometry in PLOT_CONFIG:
+            callbacks.append(ValidationPlotCallback(
+                PLOT_FREQ, self, angle, energy, geometry
+            ))
+
         return callbacks
 
     def _get_train_and_val_data(self, dataset: np.array, e_cond: np.array, angle_cond: np.array, geo_cond: np.array,
@@ -222,6 +232,8 @@ class ModelHandler:
 
             self._build_and_compile_new_model()
 
+            callbacks = self._manufacture_callbacks()
+
             history = self.model.fit(x=train_data,
                                      shuffle=True,
                                      epochs=self._epochs,
@@ -270,6 +282,8 @@ class ModelHandler:
         train_data, val_data = self._get_train_and_val_data(dataset, e_cond, angle_cond, geo_cond, train_indexes,
                                                             validation_indexes)
 
+        callbacks = self._manufacture_callbacks()
+
         history = self.model.fit(x=train_data,
                                  shuffle=True,
                                  epochs=self._epochs,
@@ -301,10 +315,36 @@ class ModelHandler:
         applicable).
 
         """
-
-        callbacks = self._manufacture_callbacks()
-
         if self._number_of_k_fold_splits > 1:
-            return self._k_fold_training(dataset, e_cond, angle_cond, geo_cond, callbacks, verbose)
+            return self._k_fold_training(dataset, e_cond, angle_cond, geo_cond, verbose)
         else:
-            return self._single_training(dataset, e_cond, angle_cond, geo_cond, callbacks, verbose)
+            return self._single_training(dataset, e_cond, angle_cond, geo_cond, verbose)
+
+
+class ValidationPlotCallback(Callback):
+    def __init__(self, verbose, handler, angle, energy, geometry):
+        super().__init__()
+        self.val_angle = angle
+        self.val_energy = energy
+        self.val_geometry = geometry
+        self.latent_dim = getattr(handler, 'latent_dim', None)
+        self.val_dataset = load_showers(INIT_DIR, geometry, energy, angle)
+        self.num_events = self.val_dataset.shape[0]
+        self.handler = handler
+        self.verbose = verbose
+
+    def on_epoch_end(self, epoch, logs=None):
+        if (epoch % self.verbose)==0:
+            print('Plotting..')
+            generator = self.handler.get_decoder()
+            generated_events = generate(generator, self.val_energy, self.val_angle, \
+                self.val_geometry, self.num_events, self.latent_dim, self.val_dataset)
+            validate(self.val_dataset, generated_events, self.val_energy, self.val_angle, self.val_geometry)
+
+            observable_names = ["LatProf", "LongProf", "E_tot", "E_cell"]
+            plot_names = [
+                f"{VALID_DIR}/{metric}_Geo_{self.val_geometry}_E_{self.val_energy}_Angle_{self.val_angle}"
+                for metric in observable_names
+            ]
+            for file in plot_names:
+                wandb.log({file: wandb.Image(f"{file}.png")})

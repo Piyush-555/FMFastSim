@@ -105,3 +105,7 @@ W&B parameters.
 """
 # Change this to your entity name.
 WANDB_ENTITY = "piyush_555"
+PLOT_FREQ = 50
+PLOT_CONFIG = [
+    [70, 128, 'SiW']
+]  # List of [angle, energy, geometry]
